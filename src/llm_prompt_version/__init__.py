@@ -41,7 +41,7 @@ class PromptVersion:
             return self.text
         try:
             return self.text.format_map(variables)
-        except (KeyError, ValueError):
+        except (KeyError, IndexError, ValueError, AttributeError, TypeError):
             return self.text
 
     def as_message(self, variables: dict[str, Any] | None = None) -> dict:
@@ -112,6 +112,8 @@ class PromptVersionStore:
 
     def by_hash(self, h: str) -> PromptVersion | None:
         """Look up a version by its full or prefix hash."""
+        if not h:
+            return None
         if h in self._by_hash:
             return self._by_hash[h]
         for key, pv in self._by_hash.items():

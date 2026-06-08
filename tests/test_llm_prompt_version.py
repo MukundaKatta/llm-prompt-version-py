@@ -1,7 +1,11 @@
 """Tests for llm-prompt-version-py."""
+
 import pytest
 from llm_prompt_version import (
-    PromptVersion, PromptVersionStore, hash_prompt, short_hash
+    PromptVersion,
+    PromptVersionStore,
+    hash_prompt,
+    short_hash,
 )
 
 
@@ -32,7 +36,9 @@ def test_prompt_version_render_no_vars():
 
 
 def test_prompt_version_render_with_vars():
-    pv = PromptVersion(version="1.0", text="Hello {name}!", hash=hash_prompt("Hello {name}!"))
+    pv = PromptVersion(
+        version="1.0", text="Hello {name}!", hash=hash_prompt("Hello {name}!")
+    )
     assert pv.render({"name": "Alice"}) == "Hello Alice!"
 
 
@@ -43,7 +49,9 @@ def test_prompt_version_render_missing_var_passthrough():
 
 
 def test_prompt_version_as_message():
-    pv = PromptVersion(version="1.0", text="You are helpful.", hash=hash_prompt("You are helpful."))
+    pv = PromptVersion(
+        version="1.0", text="You are helpful.", hash=hash_prompt("You are helpful.")
+    )
     msg = pv.as_message()
     assert msg == {"role": "system", "content": "You are helpful."}
 
@@ -173,3 +181,28 @@ def test_store_description():
     store = PromptVersionStore()
     pv = store.add("1.0", "Text", description="Initial version")
     assert pv.description == "Initial version"
+
+
+def test_hash_prompt_algorithm():
+    h = hash_prompt("Hello world", algorithm="sha1")
+    assert len(h) == 40  # SHA-1 hex digest length
+    assert h == hash_prompt("Hello world", algorithm="sha1")
+
+
+def test_render_attribute_template_passthrough():
+    # Templates with attribute access on incompatible vars must not crash.
+    pv = PromptVersion(version="1.0", text="Hi {x.y}!", hash=hash_prompt("Hi {x.y}!"))
+    assert pv.render({"x": "str"}) == "Hi {x.y}!"
+
+
+def test_render_positional_template_passthrough():
+    # Positional fields with a mapping cannot resolve; pass through unchanged.
+    pv = PromptVersion(version="1.0", text="Hi {0}!", hash=hash_prompt("Hi {0}!"))
+    assert pv.render({"name": "Alice"}) == "Hi {0}!"
+
+
+def test_store_by_hash_empty_returns_none():
+    store = PromptVersionStore()
+    store.add("1.0", "Hello!")
+    store.add("2.0", "World!")
+    assert store.by_hash("") is None
