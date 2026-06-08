@@ -9,9 +9,24 @@ from typing import Any
 
 
 def hash_prompt(text: str, algorithm: str = "sha256") -> str:
-    """Return a hex digest of the prompt text."""
+    """Return a hex digest of the prompt text.
+
+    The text is encoded as UTF-8 before hashing so the digest is stable
+    across platforms and independent of the host's default encoding.
+
+    Args:
+        text: The prompt text to hash.
+        algorithm: Any algorithm name accepted by :func:`hashlib.new`
+            (e.g. ``"sha256"``, ``"sha1"``, ``"sha512"``).
+
+    Returns:
+        The hex digest as a lowercase string.
+
+    Raises:
+        ValueError: If ``algorithm`` is not a supported hash name.
+    """
     h = hashlib.new(algorithm)
-    h.update(text.encode())
+    h.update(text.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -29,7 +44,7 @@ class PromptVersion:
     hash: str
     created_at: float = field(default_factory=time.time)
     description: str = ""
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def short_hash(self) -> str:
@@ -84,9 +99,14 @@ class PromptVersionStore:
         version: str,
         text: str,
         description: str = "",
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> PromptVersion:
-        """Add a new prompt version."""
+        """Add a new prompt version.
+
+        If ``version`` already exists it is replaced in place without
+        creating a duplicate entry in the insertion order. Returns the
+        created :class:`PromptVersion`.
+        """
         h = hash_prompt(text)
         pv = PromptVersion(
             version=version,
@@ -111,14 +131,20 @@ class PromptVersionStore:
         return self._versions.get(version)
 
     def by_hash(self, h: str) -> PromptVersion | None:
-        """Look up a version by its full or prefix hash."""
+        """Look up a version by its full hash or a hash prefix.
+
+        An exact full-hash match is returned directly. Otherwise the first
+        stored hash (in sorted order, for determinism) that begins with the
+        given prefix is returned. Returns ``None`` for an empty prefix or
+        when nothing matches.
+        """
         if not h:
             return None
         if h in self._by_hash:
             return self._by_hash[h]
-        for key, pv in self._by_hash.items():
+        for key in sorted(self._by_hash):
             if key.startswith(h):
-                return pv
+                return self._by_hash[key]
         return None
 
     def latest(self) -> PromptVersion | None:
@@ -142,8 +168,12 @@ class PromptVersionStore:
             return True  # version not found → treat as changed
         return pv.hash != hash_prompt(current_text)
 
-    def diff_summary(self, v1: str, v2: str) -> dict:
-        """Return a summary of differences between two versions."""
+    def diff_summary(self, v1: str, v2: str) -> dict[str, Any]:
+        """Return a summary of differences between two versions.
+
+        Raises:
+            KeyError: If either version is not present in the store.
+        """
         pv1 = self.get(v1)
         pv2 = self.get(v2)
         return {

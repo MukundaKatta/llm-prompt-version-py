@@ -1,6 +1,13 @@
-"""Tests for llm-prompt-version-py."""
+"""Tests for llm-prompt-version-py.
 
-import pytest
+These tests use only the Python standard library ``unittest`` so they run
+with no third-party dependencies::
+
+    python3 -m unittest discover -s tests
+"""
+
+import unittest
+
 from llm_prompt_version import (
     PromptVersion,
     PromptVersionStore,
@@ -9,200 +16,255 @@ from llm_prompt_version import (
 )
 
 
-def test_hash_prompt_stable():
-    h1 = hash_prompt("Hello world")
-    h2 = hash_prompt("Hello world")
-    assert h1 == h2
-    assert len(h1) == 64  # SHA-256
+class HashPromptTests(unittest.TestCase):
+    def test_hash_prompt_stable(self):
+        h1 = hash_prompt("Hello world")
+        h2 = hash_prompt("Hello world")
+        self.assertEqual(h1, h2)
+        self.assertEqual(len(h1), 64)  # SHA-256 hex digest length
+
+    def test_hash_prompt_different(self):
+        self.assertNotEqual(hash_prompt("Hello"), hash_prompt("World"))
+
+    def test_hash_prompt_algorithm(self):
+        h = hash_prompt("Hello world", algorithm="sha1")
+        self.assertEqual(len(h), 40)  # SHA-1 hex digest length
+        self.assertEqual(h, hash_prompt("Hello world", algorithm="sha1"))
+
+    def test_hash_prompt_unicode(self):
+        # Non-ASCII text must hash deterministically.
+        h1 = hash_prompt("héllo · 世界 · 🤖")
+        h2 = hash_prompt("héllo · 世界 · 🤖")
+        self.assertEqual(h1, h2)
+        self.assertEqual(len(h1), 64)
+
+    def test_hash_prompt_empty(self):
+        # Known SHA-256 of the empty string.
+        self.assertEqual(
+            hash_prompt(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+
+    def test_short_hash_length(self):
+        self.assertEqual(len(short_hash("Hello world", length=8)), 8)
+
+    def test_short_hash_default_length(self):
+        self.assertEqual(len(short_hash("Hello world")), 8)
+
+    def test_short_hash_is_prefix_of_full_hash(self):
+        text = "You are helpful."
+        self.assertTrue(hash_prompt(text).startswith(short_hash(text)))
 
 
-def test_hash_prompt_different():
-    assert hash_prompt("Hello") != hash_prompt("World")
+class PromptVersionTests(unittest.TestCase):
+    def test_render_no_vars(self):
+        pv = PromptVersion(version="1.0", text="Hello!", hash=hash_prompt("Hello!"))
+        self.assertEqual(pv.render(), "Hello!")
+
+    def test_render_with_vars(self):
+        pv = PromptVersion(
+            version="1.0", text="Hello {name}!", hash=hash_prompt("Hello {name}!")
+        )
+        self.assertEqual(pv.render({"name": "Alice"}), "Hello Alice!")
+
+    def test_render_empty_vars_dict(self):
+        pv = PromptVersion(
+            version="1.0", text="Hello {name}!", hash=hash_prompt("Hello {name}!")
+        )
+        # An empty mapping is falsy, so the template is returned verbatim.
+        self.assertEqual(pv.render({}), "Hello {name}!")
+
+    def test_render_missing_var_passthrough(self):
+        pv = PromptVersion(
+            version="1.0", text="Hello {x}!", hash=hash_prompt("Hello {x}!")
+        )
+        self.assertIn("{x}", pv.render({"other": "y"}))
+
+    def test_render_attribute_template_passthrough(self):
+        # Attribute access on an incompatible value must not crash.
+        pv = PromptVersion(
+            version="1.0", text="Hi {x.y}!", hash=hash_prompt("Hi {x.y}!")
+        )
+        self.assertEqual(pv.render({"x": "str"}), "Hi {x.y}!")
+
+    def test_render_positional_template_passthrough(self):
+        # Positional fields cannot resolve against a mapping; pass through.
+        pv = PromptVersion(version="1.0", text="Hi {0}!", hash=hash_prompt("Hi {0}!"))
+        self.assertEqual(pv.render({"name": "Alice"}), "Hi {0}!")
+
+    def test_as_message(self):
+        pv = PromptVersion(
+            version="1.0",
+            text="You are helpful.",
+            hash=hash_prompt("You are helpful."),
+        )
+        self.assertEqual(
+            pv.as_message(), {"role": "system", "content": "You are helpful."}
+        )
+
+    def test_as_message_with_vars(self):
+        pv = PromptVersion(
+            version="1.0",
+            text="You are a {role} assistant.",
+            hash=hash_prompt("You are a {role} assistant."),
+        )
+        msg = pv.as_message({"role": "coding"})
+        self.assertEqual(
+            msg, {"role": "system", "content": "You are a coding assistant."}
+        )
+
+    def test_short_hash_property(self):
+        pv = PromptVersion(version="1.0", text="hi", hash=hash_prompt("hi"))
+        self.assertEqual(len(pv.short_hash), 8)
+        self.assertTrue(pv.hash.startswith(pv.short_hash))
 
 
-def test_short_hash_length():
-    h = short_hash("Hello world", length=8)
-    assert len(h) == 8
+class PromptVersionStoreTests(unittest.TestCase):
+    def test_add_and_get(self):
+        store = PromptVersionStore("test")
+        store.add("1.0.0", "You are helpful.")
+        pv = store.get("1.0.0")
+        self.assertEqual(pv.version, "1.0.0")
+        self.assertEqual(pv.text, "You are helpful.")
+        self.assertEqual(len(pv.hash), 64)
+
+    def test_add_returns_version(self):
+        store = PromptVersionStore()
+        pv = store.add("1.0", "Text")
+        self.assertIsInstance(pv, PromptVersion)
+        self.assertEqual(pv.version, "1.0")
+
+    def test_get_missing_raises_keyerror(self):
+        store = PromptVersionStore()
+        with self.assertRaises(KeyError) as ctx:
+            store.get("missing")
+        self.assertIn("missing", str(ctx.exception))
+
+    def test_get_or_none(self):
+        store = PromptVersionStore()
+        self.assertIsNone(store.get_or_none("x"))
+        store.add("x", "text")
+        self.assertIsNotNone(store.get_or_none("x"))
+
+    def test_latest(self):
+        store = PromptVersionStore()
+        self.assertIsNone(store.latest())
+        store.add("1.0", "first")
+        store.add("2.0", "second")
+        self.assertEqual(store.latest().version, "2.0")
+
+    def test_version_names(self):
+        store = PromptVersionStore()
+        store.add("1.0", "A")
+        store.add("2.0", "B")
+        self.assertEqual(store.version_names(), ["1.0", "2.0"])
+
+    def test_all_versions(self):
+        store = PromptVersionStore()
+        store.add("1.0", "A")
+        store.add("2.0", "B")
+        versions = store.all_versions()
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(versions[0].version, "1.0")
+
+    def test_re_add_same_version_updates_in_place(self):
+        # Re-adding a known version replaces its content without duplicating
+        # the entry in the insertion order.
+        store = PromptVersionStore()
+        store.add("1.0", "first")
+        store.add("1.0", "second")
+        self.assertEqual(store.version_names(), ["1.0"])
+        self.assertEqual(store.get("1.0").text, "second")
+        self.assertEqual(len(store), 1)
+
+    def test_has_changed_false(self):
+        store = PromptVersionStore()
+        store.add("1.0", "You are helpful.")
+        self.assertFalse(store.has_changed("1.0", "You are helpful."))
+
+    def test_has_changed_true(self):
+        store = PromptVersionStore()
+        store.add("1.0", "You are helpful.")
+        self.assertTrue(store.has_changed("1.0", "You are a bot."))
+
+    def test_has_changed_missing_version(self):
+        store = PromptVersionStore()
+        self.assertTrue(store.has_changed("missing", "any text"))
+
+    def test_by_hash_full(self):
+        store = PromptVersionStore()
+        pv = store.add("1.0", "Hello!")
+        found = store.by_hash(pv.hash)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.version, "1.0")
+
+    def test_by_hash_prefix(self):
+        store = PromptVersionStore()
+        pv = store.add("1.0", "Hello!")
+        found = store.by_hash(pv.hash[:8])
+        self.assertIsNotNone(found)
+        self.assertEqual(found.version, "1.0")
+
+    def test_by_hash_missing(self):
+        store = PromptVersionStore()
+        self.assertIsNone(store.by_hash("nonexistent"))
+
+    def test_by_hash_empty_returns_none(self):
+        store = PromptVersionStore()
+        store.add("1.0", "Hello!")
+        store.add("2.0", "World!")
+        self.assertIsNone(store.by_hash(""))
+
+    def test_len(self):
+        store = PromptVersionStore()
+        self.assertEqual(len(store), 0)
+        store.add("1.0", "A")
+        store.add("2.0", "B")
+        self.assertEqual(len(store), 2)
+
+    def test_contains(self):
+        store = PromptVersionStore()
+        store.add("1.0", "A")
+        self.assertIn("1.0", store)
+        self.assertNotIn("2.0", store)
+
+    def test_diff_summary(self):
+        store = PromptVersionStore()
+        store.add("1.0", "Short.")
+        store.add("2.0", "Much longer text here.")
+        diff = store.diff_summary("1.0", "2.0")
+        self.assertEqual(diff["v1"], "1.0")
+        self.assertEqual(diff["v2"], "2.0")
+        self.assertFalse(diff["same_hash"])
+        self.assertGreater(diff["char_delta"], 0)
+
+    def test_diff_summary_identical_text(self):
+        store = PromptVersionStore()
+        store.add("1.0", "Same text.")
+        store.add("1.0-copy", "Same text.")
+        diff = store.diff_summary("1.0", "1.0-copy")
+        self.assertTrue(diff["same_hash"])
+        self.assertEqual(diff["char_delta"], 0)
+
+    def test_metadata(self):
+        store = PromptVersionStore()
+        pv = store.add("1.0", "Text", metadata={"author": "Alice"})
+        self.assertEqual(pv.metadata["author"], "Alice")
+
+    def test_description(self):
+        store = PromptVersionStore()
+        pv = store.add("1.0", "Text", description="Initial version")
+        self.assertEqual(pv.description, "Initial version")
+
+    def test_independent_stores_do_not_share_state(self):
+        # Mutable default fields must not leak between instances.
+        a = PromptVersionStore("a")
+        b = PromptVersionStore("b")
+        a.add("1.0", "only in a")
+        self.assertIn("1.0", a)
+        self.assertNotIn("1.0", b)
+        self.assertEqual(len(b), 0)
 
 
-def test_short_hash_default_length():
-    h = short_hash("Hello world")
-    assert len(h) == 8
-
-
-def test_prompt_version_render_no_vars():
-    pv = PromptVersion(version="1.0", text="Hello!", hash=hash_prompt("Hello!"))
-    assert pv.render() == "Hello!"
-
-
-def test_prompt_version_render_with_vars():
-    pv = PromptVersion(
-        version="1.0", text="Hello {name}!", hash=hash_prompt("Hello {name}!")
-    )
-    assert pv.render({"name": "Alice"}) == "Hello Alice!"
-
-
-def test_prompt_version_render_missing_var_passthrough():
-    pv = PromptVersion(version="1.0", text="Hello {x}!", hash=hash_prompt("Hello {x}!"))
-    result = pv.render({"other": "y"})
-    assert "{x}" in result
-
-
-def test_prompt_version_as_message():
-    pv = PromptVersion(
-        version="1.0", text="You are helpful.", hash=hash_prompt("You are helpful.")
-    )
-    msg = pv.as_message()
-    assert msg == {"role": "system", "content": "You are helpful."}
-
-
-def test_prompt_version_short_hash():
-    pv = PromptVersion(version="1.0", text="hi", hash=hash_prompt("hi"))
-    assert len(pv.short_hash) == 8
-
-
-def test_store_add_and_get():
-    store = PromptVersionStore("test")
-    store.add("1.0.0", "You are helpful.")
-    pv = store.get("1.0.0")
-    assert pv.version == "1.0.0"
-    assert pv.text == "You are helpful."
-    assert len(pv.hash) == 64
-
-
-def test_store_get_missing_raises():
-    store = PromptVersionStore()
-    with pytest.raises(KeyError) as exc_info:
-        store.get("missing")
-    assert "missing" in str(exc_info.value)
-
-
-def test_store_get_or_none():
-    store = PromptVersionStore()
-    assert store.get_or_none("x") is None
-    store.add("x", "text")
-    assert store.get_or_none("x") is not None
-
-
-def test_store_latest():
-    store = PromptVersionStore()
-    assert store.latest() is None
-    store.add("1.0", "first")
-    store.add("2.0", "second")
-    assert store.latest().version == "2.0"
-
-
-def test_store_version_names():
-    store = PromptVersionStore()
-    store.add("1.0", "A")
-    store.add("2.0", "B")
-    assert store.version_names() == ["1.0", "2.0"]
-
-
-def test_store_all_versions():
-    store = PromptVersionStore()
-    store.add("1.0", "A")
-    store.add("2.0", "B")
-    versions = store.all_versions()
-    assert len(versions) == 2
-    assert versions[0].version == "1.0"
-
-
-def test_store_has_changed_false():
-    store = PromptVersionStore()
-    store.add("1.0", "You are helpful.")
-    assert store.has_changed("1.0", "You are helpful.") is False
-
-
-def test_store_has_changed_true():
-    store = PromptVersionStore()
-    store.add("1.0", "You are helpful.")
-    assert store.has_changed("1.0", "You are a bot.") is True
-
-
-def test_store_has_changed_missing_version():
-    store = PromptVersionStore()
-    assert store.has_changed("missing", "any text") is True
-
-
-def test_store_by_hash():
-    store = PromptVersionStore()
-    pv = store.add("1.0", "Hello!")
-    found = store.by_hash(pv.hash)
-    assert found is not None
-    assert found.version == "1.0"
-
-
-def test_store_by_hash_prefix():
-    store = PromptVersionStore()
-    pv = store.add("1.0", "Hello!")
-    found = store.by_hash(pv.hash[:8])
-    assert found is not None
-
-
-def test_store_by_hash_missing():
-    store = PromptVersionStore()
-    assert store.by_hash("nonexistent") is None
-
-
-def test_store_len():
-    store = PromptVersionStore()
-    assert len(store) == 0
-    store.add("1.0", "A")
-    store.add("2.0", "B")
-    assert len(store) == 2
-
-
-def test_store_contains():
-    store = PromptVersionStore()
-    store.add("1.0", "A")
-    assert "1.0" in store
-    assert "2.0" not in store
-
-
-def test_store_diff_summary():
-    store = PromptVersionStore()
-    store.add("1.0", "Short.")
-    store.add("2.0", "Much longer text here.")
-    diff = store.diff_summary("1.0", "2.0")
-    assert diff["v1"] == "1.0"
-    assert diff["v2"] == "2.0"
-    assert diff["same_hash"] is False
-    assert diff["char_delta"] > 0
-
-
-def test_store_metadata():
-    store = PromptVersionStore()
-    pv = store.add("1.0", "Text", metadata={"author": "Alice"})
-    assert pv.metadata["author"] == "Alice"
-
-
-def test_store_description():
-    store = PromptVersionStore()
-    pv = store.add("1.0", "Text", description="Initial version")
-    assert pv.description == "Initial version"
-
-
-def test_hash_prompt_algorithm():
-    h = hash_prompt("Hello world", algorithm="sha1")
-    assert len(h) == 40  # SHA-1 hex digest length
-    assert h == hash_prompt("Hello world", algorithm="sha1")
-
-
-def test_render_attribute_template_passthrough():
-    # Templates with attribute access on incompatible vars must not crash.
-    pv = PromptVersion(version="1.0", text="Hi {x.y}!", hash=hash_prompt("Hi {x.y}!"))
-    assert pv.render({"x": "str"}) == "Hi {x.y}!"
-
-
-def test_render_positional_template_passthrough():
-    # Positional fields with a mapping cannot resolve; pass through unchanged.
-    pv = PromptVersion(version="1.0", text="Hi {0}!", hash=hash_prompt("Hi {0}!"))
-    assert pv.render({"name": "Alice"}) == "Hi {0}!"
-
-
-def test_store_by_hash_empty_returns_none():
-    store = PromptVersionStore()
-    store.add("1.0", "Hello!")
-    store.add("2.0", "World!")
-    assert store.by_hash("") is None
+if __name__ == "__main__":
+    unittest.main()

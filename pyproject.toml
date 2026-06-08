@@ -22,3 +22,6 @@ Homepage = "https://github.com/MukundaKatta/llm-prompt-version-py"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+llm_prompt_version = ["py.typed"]
